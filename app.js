@@ -1,6 +1,5 @@
 const express = require("express");
 const { google } = require("googleapis");
-const session = require("express-session");
 const app = express();
 const port = 4000; // Change to the desired port
 const cors = require("cors");
@@ -11,13 +10,21 @@ global.fetch = require("isomorphic-fetch");
 
 // Configuration
 const credentials = require("./credentials.json");
-const gmailScopes = ["https://www.googleapis.com/auth/gmail.readonly"];
-const outlookScopes = ["https://graph.microsoft.com/Mail.Read"];
+const gmailScopes = [
+  "https://www.googleapis.com/auth/gmail.readonly",
+  "https://www.googleapis.com/auth/calendar.readonly",
+];
+
+const outlookScopes = [
+  "https://graph.microsoft.com/Mail.Read",
+  "https://graph.microsoft.com/Calendars.Read",
+];
 
 const mongoose = require("mongoose");
 
 // MongoDB configuration
-const MONGODB_URI = "mongodb+srv://mukthar:mukthar@cluster0.zd6myfd.mongodb.net/tokenStore?retryWrites=true&w=majority"; //
+const MONGODB_URI =
+  "mongodb+srv://mukthar:mukthar@cluster0.zd6myfd.mongodb.net/tokenStore?retryWrites=true&w=majority"; //
 
 // Create a schema for storing access tokens
 const tokenSchema = new mongoose.Schema({
@@ -45,7 +52,11 @@ const gmailOAuth2Client = new google.auth.OAuth2(
   gmailRedirectUris[0]
 );
 
-
+const calendarOAuth2Client = new google.auth.OAuth2(
+  gmailClientId,
+  gmailClientSecret,
+  gmailRedirectUris[0]
+);
 // Outlook configuration
 const {
   client_secret: outlookClientSecret,
@@ -71,15 +82,6 @@ const msalClient = new PublicClientApplication(msalConfig);
 
 app.use(cors());
 
-// Set up session middleware
-app.use(
-  session({
-    secret: "your-secret",
-    resave: false,
-    saveUninitialized: true,
-  })
-);
-
 // Gmail Routes
 
 // Get the Gmail authorization URL
@@ -102,27 +104,40 @@ app.get("/gmail/auth/callback", async (req, res) => {
     const { tokens } = await gmailOAuth2Client.getToken(code);
     gmailOAuth2Client.setCredentials(tokens);
 
-    // Store the Gmail access token in the session
-    gmailAccessToken = tokens.access_token;
     // Save the Gmail access token to the database
     const gmailToken = new Token({
       provider: "gmail",
-      accessToken: gmailAccessToken,
+      accessToken: tokens.access_token,
     });
     await gmailToken.save();
-    res.json({ accessToken: gmailAccessToken });
+    res.json({ accessToken: tokens.access_token });
   } catch (error) {
-    console.error("Error retrieving Gmail access token:", error);
-    res.status(500).send("An error occurred during Gmail authentication.");
+    console.error("Error exchanging Gmail authorization code:", error);
+    res.status(500).json({ error: "Failed to exchange authorization code for access token" });
+  }
+});
+
+// Set up a route to logout from Gmail
+app.get("/gmail/logout", async (req, res) => {
+  try {
+    // Clear the Gmail access token from the database
+    await Token.deleteOne({ provider: "gmail" });
+
+    // Revoke the Gmail access token
+    await gmailOAuth2Client.revokeCredentials();
+
+    console.log("Gmail access token revoked.");
+    res.send("Logged out from Gmail.");
+  } catch (error) {
+    console.error("Error revoking Gmail access token:", error);
+    res.status(500).send("An error occurred during Gmail logout.");
   }
 });
 
 // Set up a route to get the list of Gmail emails
 app.get("/gmail/emails", async (req, res) => {
   try {
-
-
-    let gmailAccessToken=await Token.find({provider:"gmail"})
+    let gmailAccessToken = await Token.find({ provider: "gmail" });
     // Check if the user is authenticated with Gmail
     if (!gmailAccessToken[0]) {
       return res.status(401).send("User not authenticated with Gmail.");
@@ -178,7 +193,7 @@ app.get("/gmail/emails", async (req, res) => {
 app.get("/gmail/emails/:id", async (req, res) => {
   try {
     // Check if the user is authenticated with Gmail
-    let gmailAccessToken=await Token.find({provider:"gmail"})
+    let gmailAccessToken = await Token.find({ provider: "gmail" });
     // Check if the user is authenticated with Gmail
     if (!gmailAccessToken[0]) {
       return res.status(401).send("User not authenticated with Gmail.");
@@ -238,7 +253,7 @@ app.get("/outlook/auth/callback", async (req, res) => {
     });
 
     // Store the Outlook access token in the session
-   let outlookAccessToken = response.accessToken;
+    let outlookAccessToken = response.accessToken;
     const outlookToken = new Token({
       provider: "outlook",
       accessToken: outlookAccessToken,
@@ -254,19 +269,19 @@ app.get("/outlook/auth/callback", async (req, res) => {
 
 app.get("/outlook/emails", async (req, res) => {
   try {
-    let outlookAccessToken=await Token.find({provider:"outlook"})
-    console.log(outlookAccessToken[0],'outlookAccessToken');
-       // Check if the user is authenticated with Outlook
-       if (!outlookAccessToken[0]) {
-         return res.status(401).send("User not authenticated with Outlook.");
-       }
-   
-       // Create the Microsoft Graph client with the access token
-       const client = Client.init({
-         authProvider: (done) => {
-           done(null, outlookAccessToken[0].accessToken);
-         },
-       });
+    let outlookAccessToken = await Token.find({ provider: "outlook" });
+    console.log(outlookAccessToken[0], "outlookAccessToken");
+    // Check if the user is authenticated with Outlook
+    if (!outlookAccessToken[0]) {
+      return res.status(401).send("User not authenticated with Outlook.");
+    }
+
+    // Create the Microsoft Graph client with the access token
+    const client = Client.init({
+      authProvider: (done) => {
+        done(null, outlookAccessToken[0].accessToken);
+      },
+    });
     // Get the list of Outlook emails
     const response = await client.api("/me/mailfolders/inbox/messages").get();
 
@@ -279,13 +294,12 @@ app.get("/outlook/emails", async (req, res) => {
   }
 });
 
-
 // Set up a route to get all sent Outlook emails
 app.get("/outlook/sent/emails", async (req, res) => {
   try {
     // Check if the user is authenticated with Outlook
-    let outlookAccessToken=await Token.find({provider:"outlook"})
- console.log(outlookAccessToken[0],'outlookAccessToken');
+    let outlookAccessToken = await Token.find({ provider: "outlook" });
+    console.log(outlookAccessToken[0], "outlookAccessToken");
     // Check if the user is authenticated with Outlook
     if (!outlookAccessToken[0]) {
       return res.status(401).send("User not authenticated with Outlook.");
@@ -341,22 +355,21 @@ app.get("/outlook/sent/emails", async (req, res) => {
 // Set up a route to get details for a specific Outlook email
 app.get("/outlook/emails/:id", async (req, res) => {
   try {
-
     // Check if the user is authenticated with Outlook
-    let outlookAccessToken=await Token.find({provider:"outlook"})
-    console.log(outlookAccessToken[0],'outlookAccessToken');
-       // Check if the user is authenticated with Outlook
-       if (!outlookAccessToken[0]) {
-         return res.status(401).send("User not authenticated with Outlook.");
-       }
-   
-       // Create the Microsoft Graph client with the access token
-       const client = Client.init({
-         authProvider: (done) => {
-           done(null, outlookAccessToken[0].accessToken);
-         },
-       });
-       let emailId=req.params.id
+    let outlookAccessToken = await Token.find({ provider: "outlook" });
+    console.log(outlookAccessToken[0], "outlookAccessToken");
+    // Check if the user is authenticated with Outlook
+    if (!outlookAccessToken[0]) {
+      return res.status(401).send("User not authenticated with Outlook.");
+    }
+
+    // Create the Microsoft Graph client with the access token
+    const client = Client.init({
+      authProvider: (done) => {
+        done(null, outlookAccessToken[0].accessToken);
+      },
+    });
+    let emailId = req.params.id;
 
     // Get the details for the specific Outlook email
     const response = await client
@@ -390,6 +403,114 @@ app.get("/outlook/emails/:id", async (req, res) => {
   } catch (error) {
     console.error("Error retrieving Outlook email details:", error);
     res.status(500).send("An error occurred while retrieving Outlook email details.");
+  }
+});
+
+// Set up a route to get the list of Google Calendar events
+app.get("/google/calendar/events", async (req, res) => {
+  try {
+    let gmailAccessToken = await Token.find({ provider: "gmail" });
+    calendarOAuth2Client.setCredentials({ access_token: gmailAccessToken[0].accessToken });
+
+    // Check if the user is authenticated with Google Calendar
+    if (!gmailAccessToken[0].accessToken) {
+      return res.status(401).send("User not authenticated with Google Calendar.");
+    }
+
+    // Create the Google Calendar API client with the access token
+    const calendar = google.calendar({ version: "v3", auth: calendarOAuth2Client });
+
+    // Get the list of Google Calendar events
+    const response = await calendar.events.list({
+      calendarId: "primary",
+      timeMin: new Date().toISOString(), // Retrieve events from the current time onwards
+      maxResults: 10, // Adjust the number of events to retrieve as per your requirement
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+
+    const events = response.data.items;
+    console.log(events, "this are the events of calender google");
+
+    // Iterate over each event and extract the required details
+    const eventDetails = events.map((event) => {
+      const title = event.summary;
+      const startTime = event.start.dateTime || event.start.date; // Use dateTime for events with specific start time, use date for all-day events
+      const endTime = event.end.dateTime || event.end.date; // Use dateTime for events with specific end time, use date for all-day events
+      const date = new Date(startTime).toLocaleDateString();
+
+      return {
+        title,
+        startTime,
+        endTime,
+        date,
+      };
+    });
+
+    res.json(eventDetails);
+  } catch (error) {
+    console.error("Error retrieving Google Calendar events:", error);
+    res.status(500).send("An error occurred while retrieving Google Calendar events.");
+  }
+});
+
+// Set up a route to get the list of Outlook calendar events
+app.get("/outlook/calendar/events", async (req, res) => {
+  try {
+    // Check if the user is authenticated with Outlook
+    let outlookAccessToken = await Token.find({ provider: "outlook" });
+    console.log(outlookAccessToken[0], "outlookAccessToken");
+
+    // Check if the user is authenticated with Outlook
+    if (!outlookAccessToken[0]) {
+      return res.status(401).send("User not authenticated with Outlook.");
+    }
+
+    // Create the Microsoft Graph client with the access token
+    const client = Client.init({
+      authProvider: (done) => {
+        done(null, outlookAccessToken[0].accessToken);
+      },
+    });
+
+    // Get the list of Outlook calendar events
+    const response = await client.api("/me/events").get();
+
+    const events = response.value;
+    console.log(events, "this are the events of calender outlook");
+    // Iterate over each event and retrieve the required details
+    const eventDetails = events.map((event) => {
+      const title = event.subject;
+      const description = event.bodyPreview;
+      const location = event.location.displayName;
+      const startTime = event.start.dateTime;
+      const endTime = event.end.dateTime;
+
+      return {
+        title,
+        description,
+        location,
+        startTime,
+        endTime,
+      };
+    });
+
+    res.json(eventDetails);
+  } catch (error) {
+    console.error("Error retrieving Outlook calendar events:", error);
+    res.status(500).send("An error occurred while retrieving Outlook calendar events.");
+  }
+});
+
+// Set up a route to logout from Outlook
+app.get("/outlook/logout", async (req, res) => {
+  try {
+    // Clear the Outlook access token from the database
+    await Token.deleteOne({ provider: "outlook" });
+    res.send("Logged out from Outlook.");
+  } catch (error) {
+    console.error("Error revoking Outlook access token:", error);
+    res.status(500).send("An error occurred during Outlook logout.");
   }
 });
 
