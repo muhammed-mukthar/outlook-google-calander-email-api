@@ -6,7 +6,6 @@ const cors = require("cors");
 const { PublicClientApplication, InteractionRequiredAuthError } = require("@azure/msal-node");
 const { ClientSecretCredential } = require("@azure/identity");
 const { Client } = require("@microsoft/microsoft-graph-client");
-global.fetch = require("isomorphic-fetch");
 
 // Configuration
 const credentials = require("./credentials.json");
@@ -513,6 +512,82 @@ app.get("/outlook/logout", async (req, res) => {
     res.status(500).send("An error occurred during Outlook logout.");
   }
 });
+
+// Set up a route to get all Google Calendar calendars
+app.get("/google/calendar/calendars", async (req, res) => {
+  try {
+    let gmailAccessToken = await Token.findOne({ provider: "gmail" });
+    calendarOAuth2Client.setCredentials({ access_token: gmailAccessToken.accessToken });
+
+    // Check if the user is authenticated with Google Calendar
+    if (!gmailAccessToken.accessToken) {
+      return res.status(401).send("User not authenticated with Google Calendar.");
+    }
+
+    // Create the Google Calendar API client with the access token
+    const calendar = google.calendar({ version: "v3", auth: calendarOAuth2Client });
+
+    // Get the list of Google Calendar calendars
+    const response = await calendar.calendarList.list();
+
+    const calendars = response.data.items;
+
+    res.json(calendars);
+  } catch (error) {
+    console.error("Error retrieving Google Calendar calendars:", error);
+    res.status(500).send("An error occurred while retrieving Google Calendar calendars.");
+  }
+});
+
+// Set up a route to get the list of Google Calendar events for a specific calendar
+app.get("/google/calendar/:calendarId/events", async (req, res) => {
+  try {
+    let gmailAccessToken = await Token.findOne({ provider: "gmail" });
+    calendarOAuth2Client.setCredentials({ access_token: gmailAccessToken.accessToken });
+
+    // Check if the user is authenticated with Google Calendar
+    if (!gmailAccessToken.accessToken) {
+      return res.status(401).send("User not authenticated with Google Calendar.");
+    }
+
+    const calendarId = req.params.calendarId; // Get the calendar ID from the URL
+
+    // Create the Google Calendar API client with the access token
+    const calendar = google.calendar({ version: "v3", auth: calendarOAuth2Client });
+
+    // Get the list of Google Calendar events for the specified calendar
+    const response = await calendar.events.list({
+      calendarId: calendarId,
+      timeMin: new Date().toISOString(), // Retrieve events from the current time onwards
+      maxResults: 1000, // Adjust get  all result
+      singleEvents: true,
+      orderBy: "startTime",
+    });
+
+    const events = response.data.items;
+
+    // Iterate over each event and extract the required details
+    const eventDetails = events.map((event) => {
+      const title = event.summary;
+      const startTime = event.start.dateTime || event.start.date; // Use dateTime for events with specific start time, use date for all-day events
+      const endTime = event.end.dateTime || event.end.date; // Use dateTime for events with specific end time, use date for all-day events
+      const date = new Date(startTime).toLocaleDateString();
+
+      return {
+        title,
+        startTime,
+        endTime,
+        date,
+      };
+    });
+
+    res.json(eventDetails);
+  } catch (error) {
+    console.error("Error retrieving Google Calendar events:", error);
+    res.status(500).send("An error occurred while retrieving Google Calendar events.");
+  }
+});
+
 
 // Start the server
 app.listen(port, () => {
